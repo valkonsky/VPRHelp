@@ -1,6 +1,7 @@
 package org.example;
 
 import java.io.IOException;
+import java.util.List;
 
 /**
  * Hello world!
@@ -8,16 +9,12 @@ import java.io.IOException;
  */
 public class App 
 {
-    public static void main( String[] args )
-    {
-        ExcelReader reader = null;
-        try {
-            reader = new ExcelReader("template.xlsx");
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+    public static void main(String[] args) throws IOException {
+        ExamRecordSource source = new ExcelExamRecordSource("template.xlsx", 1);
+        List<ExamRecord> records = source.loadRecords();
+
+        for (ExamRecord record : records) {
+            System.out.println(record);
         }
-        reader.initStudentsInExam();
-        reader.initMarksOfStudents();
-        System.out.println(reader.getStudents());
     }
 }
