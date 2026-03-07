@@ -21,7 +21,6 @@ import java.util.regex.Pattern;
 public class ExcelExamRecordSource implements ExamRecordSource {
 
     private static final Pattern TASK_HEADER_PATTERN = Pattern.compile("^\\d+\\s*\\(.*\\)$");
-    private static final String ABSENT_MARK = "не присутствовал";
 
     private final String filename;
     private final int sheetIndex;
@@ -70,7 +69,7 @@ public class ExcelExamRecordSource implements ExamRecordSource {
                 for (Integer variantIndex : schema.variantIndexes) {
                     String variantValue = getCellValue(row, variantIndex.intValue(), formatter, evaluator);
 
-                    if (variantValue.equalsIgnoreCase(ABSENT_MARK)) {
+                    if (isAbsentValue(variantValue)) {
                         absent = true;
                     }
 
@@ -182,6 +181,10 @@ public class ExcelExamRecordSource implements ExamRecordSource {
 
         String trimmed = header.trim();
         return TASK_HEADER_PATTERN.matcher(trimmed).matches();
+    }
+
+    private boolean isAbsentValue(String value) {
+        return normalize(value).contains("отсутств");
     }
 
     private Integer parseTaskValue(String value) {
