@@ -24,12 +24,11 @@ import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 public class MainApp extends Application {
 
@@ -73,9 +72,23 @@ public class MainApp extends Application {
     private List<ExamRecord> rawRecords = new ArrayList<ExamRecord>();
     private List<ExamRecord> currentRecords = new ArrayList<ExamRecord>();
 
+    private final ParticipantRegistry participantRegistry =
+            new ParticipantRegistry(new File("data/participants.properties"));
+
+    private final GradeService gradeService = new GradeService();
+    private final ClassIntervalService classIntervalService = new ClassIntervalService();
+    private final StatsService statsService = new StatsService(gradeService);
+
     @Override
     public void start(Stage stage) {
         stage.setTitle("VPRHelp");
+
+        try {
+            participantRegistry.load();
+            statusLabel.setText("База участников загружена: " + participantRegistry.size());
+        } catch (IOException e) {
+            statusLabel.setText("Не удалось загрузить базу участников: " + e.getMessage());
+        }
 
         fileField.setPrefWidth(420);
         fileField.setEditable(false);
@@ -86,14 +99,17 @@ public class MainApp extends Application {
         Button browseButton = new Button("Выбрать файл");
         Button loadButton = new Button("Загрузить файл");
         Button applyButton = new Button("Применить и показать");
+        Button loadProtocolButton = new Button("Загрузить протокол");
 
         browseButton.getStyleClass().add("secondary-button");
         loadButton.getStyleClass().add("primary-button");
         applyButton.getStyleClass().add("primary-button");
+        loadProtocolButton.getStyleClass().add("secondary-button");
 
         browseButton.setOnAction(event -> chooseFile(stage));
         loadButton.setOnAction(event -> loadData());
         applyButton.setOnAction(event -> applySettingsAndShowResults());
+        loadProtocolButton.setOnAction(event -> loadProtocol(stage));
 
         HBox controls = new HBox(
                 10,
@@ -102,7 +118,8 @@ public class MainApp extends Application {
                 browseButton,
                 new Label("Лист:"),
                 sheetField,
-                loadButton
+                loadButton,
+                loadProtocolButton
         );
         controls.setPadding(new Insets(10));
         controls.getStyleClass().add("top-toolbar");
@@ -170,6 +187,13 @@ public class MainApp extends Application {
         studentIdColumn.setCellValueFactory(new PropertyValueFactory<ExamRecord, String>("studentId"));
         studentIdColumn.setPrefWidth(120);
 
+        TableColumn<ExamRecord, String> fullNameColumn = new TableColumn<ExamRecord, String>("ФИО");
+        fullNameColumn.setCellValueFactory(cellData ->
+                new SimpleStringProperty(
+                        participantRegistry.getNameByCode(cellData.getValue().getStudentId())
+                ));
+        fullNameColumn.setPrefWidth(240);
+
         TableColumn<ExamRecord, String> variantsColumn = new TableColumn<ExamRecord, String>("Варианты");
         variantsColumn.setCellValueFactory(cellData ->
                 new SimpleStringProperty(String.join(", ", cellData.getValue().getVariants())));
@@ -200,7 +224,13 @@ public class MainApp extends Application {
 
         TableColumn<ExamRecord, String> currentMarkColumn = new TableColumn<ExamRecord, String>("Текущая отметка");
         currentMarkColumn.setCellValueFactory(cellData -> {
-            Integer currentMark = determineCurrentGradeSafe(cellData.getValue().getTotalScore());
+            Integer currentMark = gradeService.determineCurrentGradeSafe(
+                    cellData.getValue().getTotalScore(),
+                    grade2FromField, grade2ToField,
+                    grade3FromField, grade3ToField,
+                    grade4FromField, grade4ToField,
+                    grade5FromField, grade5ToField
+            );
             return new SimpleStringProperty(toDisplayString(currentMark));
         });
         currentMarkColumn.setPrefWidth(140);
@@ -208,11 +238,20 @@ public class MainApp extends Application {
         TableColumn<ExamRecord, String> comparisonColumn = new TableColumn<ExamRecord, String>("Сравнение");
         comparisonColumn.setCellValueFactory(cellData -> {
             ExamRecord record = cellData.getValue();
-            return new SimpleStringProperty(buildComparisonText(record));
+            return new SimpleStringProperty(
+                    gradeService.buildComparisonText(
+                            record,
+                            grade2FromField, grade2ToField,
+                            grade3FromField, grade3ToField,
+                            grade4FromField, grade4ToField,
+                            grade5FromField, grade5ToField
+                    )
+            );
         });
         comparisonColumn.setPrefWidth(130);
 
         tableView.getColumns().add(studentIdColumn);
+        tableView.getColumns().add(fullNameColumn);
         tableView.getColumns().add(variantsColumn);
         tableView.getColumns().add(taskScoresColumn);
         tableView.getColumns().add(classNumberColumn);
@@ -446,6 +485,56 @@ public class MainApp extends Application {
         }
     }
 
+    private void loadProtocol(Stage stage) {
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Выберите протокол");
+        fileChooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Word files", "*.docx")
+        );
+
+        File file = fileChooser.showOpenDialog(stage);
+        if (file == null) {
+            return;
+        }
+
+        try {
+            ProtocolDocxReader reader = new ProtocolDocxReader();
+            Map<String, String> loaded = reader.read(file.getAbsolutePath());
+
+            if (loaded.isEmpty()) {
+                showError("В протоколе не найдено ни одной пары «код - ФИО».");
+                return;
+            }
+
+            int before = participantRegistry.size();
+            participantRegistry.putAll(loaded);
+            participantRegistry.save();
+            int after = participantRegistry.size();
+
+            tableView.refresh();
+
+            if (rawRecords == null || rawRecords.isEmpty()) {
+                statusLabel.setText(
+                        "Протокол загружен: " + file.getName() +
+                                ". Найдено записей: " + loaded.size() +
+                                ", всего в базе: " + after +
+                                ", новых: " + (after - before) +
+                                ". Теперь загрузите Excel-файл."
+                );
+                return;
+            }
+
+            statusLabel.setText(
+                    "Протокол загружен: " + file.getName() +
+                            ". Найдено записей: " + loaded.size() +
+                            ", всего в базе: " + after +
+                            ", новых: " + (after - before)
+            );
+        } catch (Exception e) {
+            showError("Ошибка загрузки протокола: " + e.getMessage());
+        }
+    }
+
     private void loadData() {
         String filePath = fileField.getText();
         if (filePath == null || filePath.trim().isEmpty()) {
@@ -494,17 +583,18 @@ public class MainApp extends Application {
         try {
             classIntervals = readClassIntervals();
 
-            range2 = readRange(grade2FromField, grade2ToField, "2");
-            range3 = readRange(grade3FromField, grade3ToField, "3");
-            range4 = readRange(grade4FromField, grade4ToField, "4");
-            range5 = readRange(grade5FromField, grade5ToField, "5");
+            range2 = gradeService.readRange(grade2FromField, grade2ToField, "2");
+            range3 = gradeService.readRange(grade3FromField, grade3ToField, "3");
+            range4 = gradeService.readRange(grade4FromField, grade4ToField, "4");
+            range5 = gradeService.readRange(grade5FromField, grade5ToField, "5");
         } catch (IllegalArgumentException e) {
             showError(e.getMessage());
             return;
         }
 
-        ClassAssignmentResult assignmentResult = applyClassIntervals(rawRecords, classIntervals);
-        currentRecords = assignmentResult.records;
+        ClassAssignmentResult assignmentResult =
+                classIntervalService.applyClassIntervals(rawRecords, classIntervals);
+        currentRecords = assignmentResult.getRecords();
 
         tableView.setItems(FXCollections.observableArrayList(currentRecords));
         updateAttendanceStats(currentRecords);
@@ -521,7 +611,7 @@ public class MainApp extends Application {
 
         statusLabel.setText(
                 "Показаны результаты. " +
-                        "Классы определены по диапазонам: " + assignmentResult.assignedCount +
+                        "Классы определены по диапазонам: " + assignmentResult.getAssignedCount() +
                         "; без класса осталось: " + unknownCount
         );
     }
@@ -547,323 +637,41 @@ public class MainApp extends Application {
     }
 
     private void updateAttendanceStats(List<ExamRecord> records) {
-        int totalCount = records.size();
-        long absentCount = records.stream()
-                .filter(ExamRecord::isAbsent)
-                .count();
+        StatsService.AttendanceStats stats = statsService.calculateAttendanceStats(records);
 
-        double absentPercent = totalCount == 0
-                ? 0.0
-                : (absentCount * 100.0) / totalCount;
-
-        totalCountLabel.setText(String.valueOf(totalCount));
-        absentCountLabel.setText(String.valueOf(absentCount));
-        absentPercentLabel.setText(String.format(Locale.US, "%.2f%%", absentPercent));
+        totalCountLabel.setText(String.valueOf(stats.getTotalCount()));
+        absentCountLabel.setText(String.valueOf(stats.getAbsentCount()));
+        absentPercentLabel.setText(String.format(Locale.US, "%.2f%%", stats.getAbsentPercent()));
     }
 
     private void updateGradeStats(GradeRange range2, GradeRange range3, GradeRange range4, GradeRange range5) {
-        List<ExamRecord> eligibleRecords = currentRecords.stream()
-                .filter(record -> !record.isAbsent())
-                .filter(record -> record.getTotalScore() != null)
-                .collect(Collectors.toList());
+        StatsService.GradeStats stats =
+                statsService.calculateGradeStats(currentRecords, range2, range3, range4, range5);
 
-        int baseCount = eligibleRecords.size();
+        grade2CountLabel.setText(String.valueOf(stats.getCount2()));
+        grade3CountLabel.setText(String.valueOf(stats.getCount3()));
+        grade4CountLabel.setText(String.valueOf(stats.getCount4()));
+        grade5CountLabel.setText(String.valueOf(stats.getCount5()));
 
-        long count2 = eligibleRecords.stream()
-                .filter(record -> range2.contains(record.getTotalScore()))
-                .count();
-
-        long count3 = eligibleRecords.stream()
-                .filter(record -> range3.contains(record.getTotalScore()))
-                .count();
-
-        long count4 = eligibleRecords.stream()
-                .filter(record -> range4.contains(record.getTotalScore()))
-                .count();
-
-        long count5 = eligibleRecords.stream()
-                .filter(record -> range5.contains(record.getTotalScore()))
-                .count();
-
-        grade2CountLabel.setText(String.valueOf(count2));
-        grade3CountLabel.setText(String.valueOf(count3));
-        grade4CountLabel.setText(String.valueOf(count4));
-        grade5CountLabel.setText(String.valueOf(count5));
-
-        grade2PercentLabel.setText(formatPercent(count2, baseCount));
-        grade3PercentLabel.setText(formatPercent(count3, baseCount));
-        grade4PercentLabel.setText(formatPercent(count4, baseCount));
-        grade5PercentLabel.setText(formatPercent(count5, baseCount));
+        grade2PercentLabel.setText(stats.getPercent2());
+        grade3PercentLabel.setText(stats.getPercent3());
+        grade4PercentLabel.setText(stats.getPercent4());
+        grade5PercentLabel.setText(stats.getPercent5());
     }
 
     private void updateComparisonStats(GradeRange range2, GradeRange range3, GradeRange range4, GradeRange range5) {
-        List<ExamRecord> comparableRecords = currentRecords.stream()
-                .filter(record -> !record.isAbsent())
-                .filter(record -> record.getPreviousPeriodMark() != null)
-                .filter(record -> record.getTotalScore() != null)
-                .collect(Collectors.toList());
+        StatsService.ComparisonStats stats =
+                statsService.calculateComparisonStats(currentRecords, range2, range3, range4, range5);
 
-        int baseCount = 0;
-        long matchedCount = 0;
-        long increasedCount = 0;
-        long decreasedCount = 0;
-
-        for (ExamRecord record : comparableRecords) {
-            Integer currentGrade = determineGrade(
-                    record.getTotalScore(),
-                    range2,
-                    range3,
-                    range4,
-                    range5
-            );
-
-            Integer previousGrade = record.getPreviousPeriodMark();
-
-            if (currentGrade == null) {
-                continue;
-            }
-
-            baseCount++;
-
-            if (currentGrade.intValue() == previousGrade.intValue()) {
-                matchedCount++;
-            } else if (currentGrade.intValue() > previousGrade.intValue()) {
-                increasedCount++;
-            } else {
-                decreasedCount++;
-            }
-        }
-
-        matchedCountLabel.setText(String.valueOf(matchedCount));
-        increasedCountLabel.setText(String.valueOf(increasedCount));
-        decreasedCountLabel.setText(String.valueOf(decreasedCount));
-        matchedPercentLabel.setText(formatPercent(matchedCount, baseCount));
+        matchedCountLabel.setText(String.valueOf(stats.getMatchedCount()));
+        increasedCountLabel.setText(String.valueOf(stats.getIncreasedCount()));
+        decreasedCountLabel.setText(String.valueOf(stats.getDecreasedCount()));
+        matchedPercentLabel.setText(stats.getMatchedPercent());
     }
 
     private void updateClassStatsTable(GradeRange range2, GradeRange range3, GradeRange range4, GradeRange range5) {
-        List<ClassStats> stats = buildClassStats(range2, range3, range4, range5);
+        List<ClassStats> stats = statsService.buildClassStats(currentRecords, range2, range3, range4, range5);
         classStatsTableView.setItems(FXCollections.observableArrayList(stats));
-    }
-
-    private List<ClassStats> buildClassStats(
-            GradeRange range2,
-            GradeRange range3,
-            GradeRange range4,
-            GradeRange range5
-    ) {
-        Map<String, List<ExamRecord>> grouped = currentRecords.stream()
-                .collect(Collectors.groupingBy(record -> normalizeClassNumber(record.getClassNumber())));
-
-        return grouped.entrySet().stream()
-                .sorted(Comparator.comparing(Map.Entry::getKey, this::compareClassNumbers))
-                .map(entry -> buildSingleClassStats(entry.getKey(), entry.getValue(), range2, range3, range4, range5))
-                .collect(Collectors.toList());
-    }
-
-    private ClassStats buildSingleClassStats(
-            String classNumber,
-            List<ExamRecord> records,
-            GradeRange range2,
-            GradeRange range3,
-            GradeRange range4,
-            GradeRange range5
-    ) {
-        int totalCount = records.size();
-        int absentCount = (int) records.stream()
-                .filter(ExamRecord::isAbsent)
-                .count();
-
-        double absentPercent = totalCount == 0
-                ? 0.0
-                : (absentCount * 100.0) / totalCount;
-
-        List<ExamRecord> gradedRecords = records.stream()
-                .filter(record -> !record.isAbsent())
-                .filter(record -> record.getTotalScore() != null)
-                .collect(Collectors.toList());
-
-        int grade2Count = (int) gradedRecords.stream()
-                .filter(record -> range2.contains(record.getTotalScore()))
-                .count();
-
-        int grade3Count = (int) gradedRecords.stream()
-                .filter(record -> range3.contains(record.getTotalScore()))
-                .count();
-
-        int grade4Count = (int) gradedRecords.stream()
-                .filter(record -> range4.contains(record.getTotalScore()))
-                .count();
-
-        int grade5Count = (int) gradedRecords.stream()
-                .filter(record -> range5.contains(record.getTotalScore()))
-                .count();
-
-        int matchedCount = 0;
-        int increasedCount = 0;
-        int decreasedCount = 0;
-        int comparisonBaseCount = 0;
-
-        for (ExamRecord record : records) {
-            if (record.isAbsent()) {
-                continue;
-            }
-            if (record.getPreviousPeriodMark() == null || record.getTotalScore() == null) {
-                continue;
-            }
-
-            Integer currentGrade = determineGrade(
-                    record.getTotalScore(),
-                    range2,
-                    range3,
-                    range4,
-                    range5
-            );
-
-            if (currentGrade == null) {
-                continue;
-            }
-
-            comparisonBaseCount++;
-
-            if (currentGrade.intValue() == record.getPreviousPeriodMark().intValue()) {
-                matchedCount++;
-            } else if (currentGrade.intValue() > record.getPreviousPeriodMark().intValue()) {
-                increasedCount++;
-            } else {
-                decreasedCount++;
-            }
-        }
-
-        double matchedPercent = comparisonBaseCount == 0
-                ? 0.0
-                : (matchedCount * 100.0) / comparisonBaseCount;
-
-        return new ClassStats(
-                classNumber,
-                totalCount,
-                absentCount,
-                absentPercent,
-                grade2Count,
-                grade3Count,
-                grade4Count,
-                grade5Count,
-                matchedCount,
-                increasedCount,
-                decreasedCount,
-                matchedPercent
-        );
-    }
-
-    private String normalizeClassNumber(String classNumber) {
-        if (classNumber == null || classNumber.trim().isEmpty()) {
-            return "Неизвестно";
-        }
-        return classNumber.trim();
-    }
-
-    private int compareClassNumbers(String left, String right) {
-        String leftDigits = left.replaceAll("\\D+", "");
-        String rightDigits = right.replaceAll("\\D+", "");
-
-        boolean leftNumeric = !leftDigits.isEmpty();
-        boolean rightNumeric = !rightDigits.isEmpty();
-
-        if (leftNumeric && rightNumeric) {
-            int numberCompare = Integer.compare(Integer.parseInt(leftDigits), Integer.parseInt(rightDigits));
-            if (numberCompare != 0) {
-                return numberCompare;
-            }
-        } else if (leftNumeric) {
-            return -1;
-        } else if (rightNumeric) {
-            return 1;
-        }
-
-        return left.compareToIgnoreCase(right);
-    }
-
-    private GradeRange readRange(TextField fromField, TextField toField, String gradeName) {
-        String fromText = fromField.getText().trim();
-        String toText = toField.getText().trim();
-
-        if (fromText.isEmpty() || toText.isEmpty()) {
-            throw new IllegalArgumentException("Для оценки " + gradeName + " нужно заполнить обе границы интервала.");
-        }
-
-        try {
-            int from = Integer.parseInt(fromText);
-            int to = Integer.parseInt(toText);
-
-            if (from > to) {
-                throw new IllegalArgumentException("Для оценки " + gradeName + " левая граница больше правой.");
-            }
-
-            return new GradeRange(from, to);
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Интервал для оценки " + gradeName + " должен содержать целые числа.");
-        }
-    }
-
-    private Integer determineGrade(
-            Integer totalScore,
-            GradeRange range2,
-            GradeRange range3,
-            GradeRange range4,
-            GradeRange range5
-    ) {
-        if (totalScore == null) {
-            return null;
-        }
-
-        if (range2.contains(totalScore.intValue())) {
-            return Integer.valueOf(2);
-        }
-        if (range3.contains(totalScore.intValue())) {
-            return Integer.valueOf(3);
-        }
-        if (range4.contains(totalScore.intValue())) {
-            return Integer.valueOf(4);
-        }
-        if (range5.contains(totalScore.intValue())) {
-            return Integer.valueOf(5);
-        }
-
-        return null;
-    }
-
-    private Integer determineCurrentGradeSafe(Integer totalScore) {
-        try {
-            GradeRange range2 = readRange(grade2FromField, grade2ToField, "2");
-            GradeRange range3 = readRange(grade3FromField, grade3ToField, "3");
-            GradeRange range4 = readRange(grade4FromField, grade4ToField, "4");
-            GradeRange range5 = readRange(grade5FromField, grade5ToField, "5");
-
-            return determineGrade(totalScore, range2, range3, range4, range5);
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
-    }
-
-    private String buildComparisonText(ExamRecord record) {
-        Integer previousMark = record.getPreviousPeriodMark();
-        Integer currentMark = determineCurrentGradeSafe(record.getTotalScore());
-
-        if (previousMark == null || currentMark == null) {
-            return "";
-        }
-
-        if (currentMark.intValue() == previousMark.intValue()) {
-            return "Совпадает";
-        }
-        if (currentMark.intValue() > previousMark.intValue()) {
-            return "Выше";
-        }
-        return "Ниже";
-    }
-
-    private String formatPercent(long count, int baseCount) {
-        double percent = baseCount == 0 ? 0.0 : (count * 100.0) / baseCount;
-        return String.format(Locale.US, "%.2f%%", percent);
     }
 
     private void setDefaultGradeRanges() {
@@ -893,104 +701,18 @@ public class MainApp extends Application {
     }
 
     private List<ClassInterval> readClassIntervals() {
-        List<ClassInterval> intervals = new ArrayList<ClassInterval>();
+        List<ClassIntervalService.ClassIntervalInput> inputs =
+                new ArrayList<ClassIntervalService.ClassIntervalInput>();
 
-        for (int i = 0; i < classIntervalRows.size(); i++) {
-            ClassIntervalRow row = classIntervalRows.get(i);
-            String className = row.classField.getText().trim();
-            String fromText = row.fromField.getText().trim();
-            String toText = row.toField.getText().trim();
-
-            boolean allBlank = className.isEmpty() && fromText.isEmpty() && toText.isEmpty();
-            if (allBlank) {
-                continue;
-            }
-
-            if (className.isEmpty() || fromText.isEmpty() || toText.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "Диапазон классов в строке " + (i + 1) + " заполнен не полностью. Нужны класс, от и до."
-                );
-            }
-
-            int fromValue;
-            int toValue;
-            try {
-                fromValue = Integer.parseInt(fromText);
-                toValue = Integer.parseInt(toText);
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException(
-                        "В диапазоне классов для строки " + (i + 1) + " границы должны быть целыми числами."
-                );
-            }
-
-            if (fromValue > toValue) {
-                throw new IllegalArgumentException(
-                        "В диапазоне классов для строки " + (i + 1) + " левая граница больше правой."
-                );
-            }
-
-            intervals.add(new ClassInterval(className, fromValue, toValue));
-        }
-
-        validateNoOverlaps(intervals);
-        return intervals;
-    }
-
-    private void validateNoOverlaps(List<ClassInterval> intervals) {
-        List<ClassInterval> sortedIntervals = intervals.stream()
-                .sorted(Comparator.comparingInt(ClassInterval::getFromStudentId))
-                .collect(Collectors.toList());
-
-        for (int i = 1; i < sortedIntervals.size(); i++) {
-            ClassInterval previous = sortedIntervals.get(i - 1);
-            ClassInterval current = sortedIntervals.get(i);
-            if (current.getFromStudentId() <= previous.getToStudentId()) {
-                throw new IllegalArgumentException(
-                        "Диапазоны классов пересекаются: " + previous.getClassName() +
-                                " (" + previous.getFromStudentId() + "-" + previous.getToStudentId() + ") и " +
-                                current.getClassName() + " (" + current.getFromStudentId() + "-" + current.getToStudentId() + ")"
-                );
-            }
-        }
-    }
-
-    private ClassAssignmentResult applyClassIntervals(List<ExamRecord> records, List<ClassInterval> intervals) {
-        List<ExamRecord> result = new ArrayList<ExamRecord>();
-        int assignedCount = 0;
-
-        for (ExamRecord record : records) {
-            String classNumber = record.getClassNumber();
-
-            if (classNumber == null || classNumber.trim().isEmpty()) {
-                String inferredClass = findClassByStudentId(record.getStudentId(), intervals);
-                if (inferredClass != null) {
-                    classNumber = inferredClass;
-                    assignedCount++;
-                }
-            }
-
-            result.add(new ExamRecord(
-                    record.getStudentId(),
-                    record.isAbsent(),
-                    record.getVariants(),
-                    record.getTaskScores(),
-                    classNumber,
-                    record.getGender(),
-                    record.getPreviousPeriodMark(),
-                    record.getTotalScore()
+        for (ClassIntervalRow row : classIntervalRows) {
+            inputs.add(new ClassIntervalService.ClassIntervalInput(
+                    row.classField,
+                    row.fromField,
+                    row.toField
             ));
         }
 
-        return new ClassAssignmentResult(result, assignedCount);
-    }
-
-    private String findClassByStudentId(String studentId, List<ClassInterval> intervals) {
-        for (ClassInterval interval : intervals) {
-            if (interval.contains(studentId)) {
-                return interval.getClassName();
-            }
-        }
-        return null;
+        return classIntervalService.readClassIntervals(inputs);
     }
 
     private String formatTaskScores(List<Integer> scores) {
@@ -1000,7 +722,8 @@ public class MainApp extends Application {
 
         return scores.stream()
                 .map(score -> score == null ? "Х" : String.valueOf(score))
-                .collect(Collectors.joining(", "));
+                .reduce((left, right) -> left + ", " + right)
+                .orElse("");
     }
 
     private String toDisplayString(Integer value) {
@@ -1017,90 +740,6 @@ public class MainApp extends Application {
 
     public static void main(String[] args) {
         launch(args);
-    }
-
-    private static class GradeRange {
-        private final int from;
-        private final int to;
-
-        private GradeRange(int from, int to) {
-            this.from = from;
-            this.to = to;
-        }
-
-        private boolean contains(int value) {
-            return value >= from && value <= to;
-        }
-    }
-
-    private static class ClassInterval {
-        private final String className;
-        private final int fromStudentId;
-        private final int toStudentId;
-
-        private ClassInterval(String className, int fromStudentId, int toStudentId) {
-            this.className = className;
-            this.fromStudentId = fromStudentId;
-            this.toStudentId = toStudentId;
-        }
-
-        public String getClassName() {
-            return className;
-        }
-
-        public int getFromStudentId() {
-            return fromStudentId;
-        }
-
-        public int getToStudentId() {
-            return toStudentId;
-        }
-
-        private boolean contains(String studentId) {
-            Integer numericId = extractStudentIdNumber(studentId);
-            if (numericId == null) {
-                return false;
-            }
-            return numericId >= fromStudentId && numericId <= toStudentId;
-        }
-
-        private Integer extractStudentIdNumber(String studentId) {
-            if (studentId == null) {
-                return null;
-            }
-
-            String normalized = studentId.trim();
-            if (normalized.isEmpty()) {
-                return null;
-            }
-
-            normalized = normalized.replace(',', '.');
-
-            if (normalized.matches("\\d+\\.0+")) {
-                normalized = normalized.substring(0, normalized.indexOf('.'));
-            }
-
-            String digitsOnly = normalized.replaceAll("\\D+", "");
-            if (digitsOnly.isEmpty()) {
-                return null;
-            }
-
-            try {
-                return Integer.parseInt(digitsOnly);
-            } catch (NumberFormatException e) {
-                return null;
-            }
-        }
-    }
-
-    private static class ClassAssignmentResult {
-        private final List<ExamRecord> records;
-        private final int assignedCount;
-
-        private ClassAssignmentResult(List<ExamRecord> records, int assignedCount) {
-            this.records = records;
-            this.assignedCount = assignedCount;
-        }
     }
 
     private class ClassIntervalRow {
