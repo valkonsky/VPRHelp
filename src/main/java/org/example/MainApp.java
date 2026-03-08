@@ -1,7 +1,6 @@
 package org.example;
 
 import javafx.application.Application;
-import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
@@ -11,15 +10,12 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
-import javafx.scene.control.TableColumn;
-import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
-import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.BorderPane;
-import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.scene.control.TableView;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
@@ -79,6 +75,15 @@ public class MainApp extends Application {
     private final ClassIntervalService classIntervalService = new ClassIntervalService();
     private final StatsService statsService = new StatsService(gradeService);
 
+    private final ExamTableBuilder examTableBuilder =
+            new ExamTableBuilder(participantRegistry, gradeService);
+
+    private final ClassStatsTableBuilder classStatsTableBuilder =
+            new ClassStatsTableBuilder();
+
+    private final RightPanelBuilder rightPanelBuilder =
+            new RightPanelBuilder();
+
     @Override
     public void start(Stage stage) {
         stage.setTitle("VPRHelp");
@@ -136,24 +141,37 @@ public class MainApp extends Application {
         VBox topPanel = new VBox(10, controls, statsPanel);
         topPanel.getStyleClass().add("top-panel");
 
-        VBox rightPanelContent = new VBox(
-                12,
-                createClassIntervalsPanel(),
-                createGradeRangesPanel(applyButton),
-                createGradeStatsPanel(),
-                createComparisonStatsPanel()
+        VBox rightPanelContent = rightPanelBuilder.createRightPanel(
+                classIntervalRowsBox,
+                () -> addClassIntervalRow("", "", ""),
+                applyButton,
+                grade2FromField, grade2ToField,
+                grade3FromField, grade3ToField,
+                grade4FromField, grade4ToField,
+                grade5FromField, grade5ToField,
+                grade2CountLabel, grade2PercentLabel,
+                grade3CountLabel, grade3PercentLabel,
+                grade4CountLabel, grade4PercentLabel,
+                grade5CountLabel, grade5PercentLabel,
+                matchedCountLabel,
+                increasedCountLabel,
+                decreasedCountLabel,
+                matchedPercentLabel
         );
-        rightPanelContent.setPadding(new Insets(10));
-        rightPanelContent.setPrefWidth(390);
-        rightPanelContent.getStyleClass().add("right-panel");
 
         ScrollPane rightPanelScroll = new ScrollPane(rightPanelContent);
         rightPanelScroll.setFitToWidth(true);
         rightPanelScroll.setPrefWidth(410);
         rightPanelScroll.getStyleClass().add("side-scroll");
 
-        setupTable();
-        setupClassStatsTable();
+        examTableBuilder.setupTable(
+                tableView,
+                grade2FromField, grade2ToField,
+                grade3FromField, grade3ToField,
+                grade4FromField, grade4ToField,
+                grade5FromField, grade5ToField
+        );
+        classStatsTableBuilder.setupClassStatsTable(classStatsTableView);
 
         tableView.getStyleClass().add("exam-table");
         classStatsTableView.getStyleClass().add("exam-table");
@@ -180,280 +198,6 @@ public class MainApp extends Application {
 
         stage.setScene(scene);
         stage.show();
-    }
-
-    private void setupTable() {
-        TableColumn<ExamRecord, String> studentIdColumn = new TableColumn<ExamRecord, String>("Код участника");
-        studentIdColumn.setCellValueFactory(new PropertyValueFactory<ExamRecord, String>("studentId"));
-        studentIdColumn.setPrefWidth(120);
-
-        TableColumn<ExamRecord, String> fullNameColumn = new TableColumn<ExamRecord, String>("ФИО");
-        fullNameColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(
-                        participantRegistry.getNameByCode(cellData.getValue().getStudentId())
-                ));
-        fullNameColumn.setPrefWidth(240);
-
-        TableColumn<ExamRecord, String> variantsColumn = new TableColumn<ExamRecord, String>("Варианты");
-        variantsColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(String.join(", ", cellData.getValue().getVariants())));
-        variantsColumn.setPrefWidth(160);
-
-        TableColumn<ExamRecord, String> taskScoresColumn = new TableColumn<ExamRecord, String>("Баллы");
-        taskScoresColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(formatTaskScores(cellData.getValue().getTaskScores())));
-        taskScoresColumn.setPrefWidth(360);
-
-        TableColumn<ExamRecord, String> classNumberColumn = new TableColumn<ExamRecord, String>("Класс");
-        classNumberColumn.setCellValueFactory(new PropertyValueFactory<ExamRecord, String>("classNumber"));
-        classNumberColumn.setPrefWidth(90);
-
-        TableColumn<ExamRecord, String> genderColumn = new TableColumn<ExamRecord, String>("Пол");
-        genderColumn.setCellValueFactory(new PropertyValueFactory<ExamRecord, String>("gender"));
-        genderColumn.setPrefWidth(80);
-
-        TableColumn<ExamRecord, String> previousMarkColumn = new TableColumn<ExamRecord, String>("Предыдущая отметка");
-        previousMarkColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(toDisplayString(cellData.getValue().getPreviousPeriodMark())));
-        previousMarkColumn.setPrefWidth(180);
-
-        TableColumn<ExamRecord, String> totalScoreColumn = new TableColumn<ExamRecord, String>("Итого баллов");
-        totalScoreColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(toDisplayString(cellData.getValue().getTotalScore())));
-        totalScoreColumn.setPrefWidth(130);
-
-        TableColumn<ExamRecord, String> currentMarkColumn = new TableColumn<ExamRecord, String>("Текущая отметка");
-        currentMarkColumn.setCellValueFactory(cellData -> {
-            Integer currentMark = gradeService.determineCurrentGradeSafe(
-                    cellData.getValue().getTotalScore(),
-                    grade2FromField, grade2ToField,
-                    grade3FromField, grade3ToField,
-                    grade4FromField, grade4ToField,
-                    grade5FromField, grade5ToField
-            );
-            return new SimpleStringProperty(toDisplayString(currentMark));
-        });
-        currentMarkColumn.setPrefWidth(140);
-
-        TableColumn<ExamRecord, String> comparisonColumn = new TableColumn<ExamRecord, String>("Сравнение");
-        comparisonColumn.setCellValueFactory(cellData -> {
-            ExamRecord record = cellData.getValue();
-            return new SimpleStringProperty(
-                    gradeService.buildComparisonText(
-                            record,
-                            grade2FromField, grade2ToField,
-                            grade3FromField, grade3ToField,
-                            grade4FromField, grade4ToField,
-                            grade5FromField, grade5ToField
-                    )
-            );
-        });
-        comparisonColumn.setPrefWidth(130);
-
-        tableView.getColumns().add(studentIdColumn);
-        tableView.getColumns().add(fullNameColumn);
-        tableView.getColumns().add(variantsColumn);
-        tableView.getColumns().add(taskScoresColumn);
-        tableView.getColumns().add(classNumberColumn);
-        tableView.getColumns().add(genderColumn);
-        tableView.getColumns().add(previousMarkColumn);
-        tableView.getColumns().add(totalScoreColumn);
-        tableView.getColumns().add(currentMarkColumn);
-        tableView.getColumns().add(comparisonColumn);
-
-        tableView.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
-    }
-
-    private void setupClassStatsTable() {
-        TableColumn<ClassStats, String> classColumn = new TableColumn<ClassStats, String>("Класс");
-        classColumn.setCellValueFactory(new PropertyValueFactory<ClassStats, String>("classNumber"));
-        classColumn.setPrefWidth(90);
-
-        TableColumn<ClassStats, Integer> totalColumn = new TableColumn<ClassStats, Integer>("Всего");
-        totalColumn.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("totalCount"));
-        totalColumn.setPrefWidth(80);
-
-        TableColumn<ClassStats, Integer> absentColumn = new TableColumn<ClassStats, Integer>("Отсутств.");
-        absentColumn.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("absentCount"));
-        absentColumn.setPrefWidth(95);
-
-        TableColumn<ClassStats, String> absentPercentColumn = new TableColumn<ClassStats, String>("% отсутств.");
-        absentPercentColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(String.format(Locale.US, "%.2f%%", cellData.getValue().getAbsentPercent())));
-        absentPercentColumn.setPrefWidth(110);
-
-        TableColumn<ClassStats, Integer> grade2Column = new TableColumn<ClassStats, Integer>("2");
-        grade2Column.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("grade2Count"));
-        grade2Column.setPrefWidth(60);
-
-        TableColumn<ClassStats, Integer> grade3Column = new TableColumn<ClassStats, Integer>("3");
-        grade3Column.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("grade3Count"));
-        grade3Column.setPrefWidth(60);
-
-        TableColumn<ClassStats, Integer> grade4Column = new TableColumn<ClassStats, Integer>("4");
-        grade4Column.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("grade4Count"));
-        grade4Column.setPrefWidth(60);
-
-        TableColumn<ClassStats, Integer> grade5Column = new TableColumn<ClassStats, Integer>("5");
-        grade5Column.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("grade5Count"));
-        grade5Column.setPrefWidth(60);
-
-        TableColumn<ClassStats, Integer> matchedColumn = new TableColumn<ClassStats, Integer>("Совпало");
-        matchedColumn.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("matchedCount"));
-        matchedColumn.setPrefWidth(90);
-
-        TableColumn<ClassStats, Integer> increasedColumn = new TableColumn<ClassStats, Integer>("Выше");
-        increasedColumn.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("increasedCount"));
-        increasedColumn.setPrefWidth(80);
-
-        TableColumn<ClassStats, Integer> decreasedColumn = new TableColumn<ClassStats, Integer>("Ниже");
-        decreasedColumn.setCellValueFactory(new PropertyValueFactory<ClassStats, Integer>("decreasedCount"));
-        decreasedColumn.setPrefWidth(80);
-
-        TableColumn<ClassStats, String> matchedPercentColumn = new TableColumn<ClassStats, String>("% совпад.");
-        matchedPercentColumn.setCellValueFactory(cellData ->
-                new SimpleStringProperty(String.format(Locale.US, "%.2f%%", cellData.getValue().getMatchedPercent())));
-        matchedPercentColumn.setPrefWidth(100);
-
-        classStatsTableView.getColumns().add(classColumn);
-        classStatsTableView.getColumns().add(totalColumn);
-        classStatsTableView.getColumns().add(absentColumn);
-        classStatsTableView.getColumns().add(absentPercentColumn);
-        classStatsTableView.getColumns().add(grade2Column);
-        classStatsTableView.getColumns().add(grade3Column);
-        classStatsTableView.getColumns().add(grade4Column);
-        classStatsTableView.getColumns().add(grade5Column);
-        classStatsTableView.getColumns().add(matchedColumn);
-        classStatsTableView.getColumns().add(increasedColumn);
-        classStatsTableView.getColumns().add(decreasedColumn);
-        classStatsTableView.getColumns().add(matchedPercentColumn);
-
-        classStatsTableView.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
-    }
-
-    private VBox createClassIntervalsPanel() {
-        Label title = new Label("Диапазоны номеров по классам");
-        title.getStyleClass().add("card-title");
-
-        Label hint = new Label(
-                "Сначала загрузите Excel-файл. Затем заполните класс и включительный диапазон кодов участников. " +
-                        "Класс будет определяться при нажатии «Применить и показать»."
-        );
-        hint.setWrapText(true);
-        hint.getStyleClass().add("muted-text");
-
-        Button addRowButton = new Button("Добавить диапазон");
-        addRowButton.getStyleClass().add("secondary-button");
-        addRowButton.setOnAction(event -> addClassIntervalRow("", "", ""));
-
-        VBox box = new VBox(10, title, hint, classIntervalRowsBox, addRowButton);
-        box.setPadding(new Insets(12));
-        box.getStyleClass().add("card");
-
-        return box;
-    }
-
-    private VBox createGradeRangesPanel(Button applyButton) {
-        Label title = new Label("Интервалы оценок");
-        title.getStyleClass().add("card-title");
-
-        GridPane grid = new GridPane();
-        grid.setHgap(8);
-        grid.setVgap(8);
-
-        addRangeRow(grid, 0, "Оценка 2:", grade2FromField, grade2ToField);
-        addRangeRow(grid, 1, "Оценка 3:", grade3FromField, grade3ToField);
-        addRangeRow(grid, 2, "Оценка 4:", grade4FromField, grade4ToField);
-        addRangeRow(grid, 3, "Оценка 5:", grade5FromField, grade5ToField);
-
-        Label hint = new Label("Интервалы включительные. После заполнения нажмите «Применить и показать».");
-        hint.setWrapText(true);
-        hint.getStyleClass().add("muted-text");
-
-        VBox box = new VBox(10, title, grid, hint, applyButton);
-        box.setPadding(new Insets(12));
-        box.getStyleClass().add("card");
-
-        return box;
-    }
-
-    private VBox createGradeStatsPanel() {
-        Label title = new Label("Статистика оценок");
-        title.getStyleClass().add("card-title");
-
-        GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(10);
-
-        grid.add(new Label("Оценка"), 0, 0);
-        grid.add(new Label("Количество"), 1, 0);
-        grid.add(new Label("Процент"), 2, 0);
-
-        addGradeStatRow(grid, 1, "2", grade2CountLabel, grade2PercentLabel);
-        addGradeStatRow(grid, 2, "3", grade3CountLabel, grade3PercentLabel);
-        addGradeStatRow(grid, 3, "4", grade4CountLabel, grade4PercentLabel);
-        addGradeStatRow(grid, 4, "5", grade5CountLabel, grade5PercentLabel);
-
-        Label note = new Label("Проценты считаются среди присутствовавших участников с заполненным итоговым баллом.");
-        note.setWrapText(true);
-        note.getStyleClass().add("muted-text");
-
-        VBox box = new VBox(10, title, grid, note);
-        box.setPadding(new Insets(12));
-        box.getStyleClass().add("card");
-
-        return box;
-    }
-
-    private VBox createComparisonStatsPanel() {
-        Label title = new Label("Сравнение отметок");
-        title.getStyleClass().add("card-title");
-
-        GridPane grid = new GridPane();
-        grid.setHgap(12);
-        grid.setVgap(10);
-
-        grid.add(new Label("Показатель"), 0, 0);
-        grid.add(new Label("Значение"), 1, 0);
-
-        grid.add(new Label("Совпадает"), 0, 1);
-        grid.add(matchedCountLabel, 1, 1);
-
-        grid.add(new Label("Выше"), 0, 2);
-        grid.add(increasedCountLabel, 1, 2);
-
-        grid.add(new Label("Ниже"), 0, 3);
-        grid.add(decreasedCountLabel, 1, 3);
-
-        grid.add(new Label("Процент совпадений"), 0, 4);
-        grid.add(matchedPercentLabel, 1, 4);
-
-        Label note = new Label("Учитываются только присутствовавшие участники с заполненными предыдущей отметкой и итоговым баллом.");
-        note.setWrapText(true);
-        note.getStyleClass().add("muted-text");
-
-        VBox box = new VBox(10, title, grid, note);
-        box.setPadding(new Insets(12));
-        box.getStyleClass().add("card");
-
-        return box;
-    }
-
-    private void addRangeRow(GridPane grid, int rowIndex, String labelText, TextField fromField, TextField toField) {
-        fromField.setPrefWidth(70);
-        toField.setPrefWidth(70);
-
-        grid.add(new Label(labelText), 0, rowIndex);
-        grid.add(new Label("от"), 1, rowIndex);
-        grid.add(fromField, 2, rowIndex);
-        grid.add(new Label("до"), 3, rowIndex);
-        grid.add(toField, 4, rowIndex);
-    }
-
-    private void addGradeStatRow(GridPane grid, int rowIndex, String grade, Label countLabel, Label percentLabel) {
-        grid.add(new Label(grade), 0, rowIndex);
-        grid.add(countLabel, 1, rowIndex);
-        grid.add(percentLabel, 2, rowIndex);
     }
 
     private VBox createStatBox(String titleText, Label valueLabel) {
@@ -713,21 +457,6 @@ public class MainApp extends Application {
         }
 
         return classIntervalService.readClassIntervals(inputs);
-    }
-
-    private String formatTaskScores(List<Integer> scores) {
-        if (scores == null || scores.isEmpty()) {
-            return "";
-        }
-
-        return scores.stream()
-                .map(score -> score == null ? "Х" : String.valueOf(score))
-                .reduce((left, right) -> left + ", " + right)
-                .orElse("");
-    }
-
-    private String toDisplayString(Integer value) {
-        return value == null ? "" : String.valueOf(value);
     }
 
     private void showError(String message) {
